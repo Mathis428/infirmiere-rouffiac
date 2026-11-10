@@ -1,0 +1,14 @@
+# Captures d'écran et documents privés : ne jamais publier
+WhatsApp*
+*.jpeg
+prive/
+_prive/
+
+# Secrets
+.env
+*.key
+
+# Système
+.DS_Store
+Thumbs.db
+desktop.ini
