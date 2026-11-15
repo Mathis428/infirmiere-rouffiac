@@ -938,3 +938,10 @@ p {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Portrait : pas d'enregistrement par appui long ni de glisser-déposer (simple frein, pas une protection). */
+img[data-no-save] {
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}

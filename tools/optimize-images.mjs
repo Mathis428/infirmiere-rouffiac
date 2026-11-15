@@ -9,7 +9,7 @@ await mkdir(OUT, { recursive: true });
 // ratio : largeur / hauteur du recadrage (null = garder l'original)
 // focus : position du recadrage (voir sharp « position »)
 const jobs = [
-  { src: 'sources/portrait-isabelle-buisson.webp', name: 'isabelle-buisson', ratio: 3 / 4, focus: 'top', widths: [600, 900] },
+  { src: 'sources/portrait-isabelle-buisson.webp', name: 'isabelle-buisson', ratio: 3 / 4, focus: 'top', widths: [480, 640] },
   { src: 'sources/photos/chateaumontialoux.jpg', name: 'saint-bauzile', ratio: 4 / 3, focus: 'centre', widths: [600, 900] },
   { src: 'sources/photos/fr-48-balsieges3.jpg', name: 'balsieges', ratio: 4 / 3, focus: 'bottom', widths: [600, 900] },
   { src: 'sources/photos/brenoux-l-eglise-et-le-village.jpg', name: 'brenoux', ratio: 4 / 3, focus: 'left', widths: [600, 890] },

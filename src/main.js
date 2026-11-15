@@ -8,6 +8,16 @@ initBooking(document.querySelector('[data-booking]'), CONFIG);
 initMotion();
 initTopbar(document.querySelector('[data-topbar]'));
 initCard(document.querySelector('[data-stage]'));
+protectImages(document.querySelectorAll('img[data-no-save]'));
+
+// Portrait : pas de menu « Enregistrer l'image » au clic droit, pas de glisser-déposer.
+// Ce n'est qu'un frein : une capture d'écran reste toujours possible.
+function protectImages(images) {
+  images.forEach((img) => {
+    img.addEventListener('contextmenu', (e) => e.preventDefault());
+    img.addEventListener('dragstart', (e) => e.preventDefault());
+  });
+}
 
 // Ombre sous la barre du haut dès qu'on a défilé.
 function initTopbar(bar) {
