@@ -12,3 +12,11 @@ _prive/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Originaux des photos et captures (non publiés)
+sources/
+
+# Outils
+node_modules/
+.taste-skill/
+.claude/
