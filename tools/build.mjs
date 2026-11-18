@@ -1,17 +1,23 @@
 // Assemble les scripts du site (src/ → assets/js/) avec esbuild.
-// npm run build   : une fois, minifié. Le nom du fichier principal contient une
-//                   empreinte (main-XXXX.js) et index.html est mis à jour : les
-//                   visiteurs reçoivent toujours la dernière version, sans cache périmé.
-// npm run watch   : reconstruit à chaque modification (fichier main.js, sans empreinte)
+// npm run build   : une fois, minifié. Les fichiers principaux portent une empreinte
+//                   (main-XXXX.js, admin-XXXX.js) et les pages sont mises à jour :
+//                   les visiteurs reçoivent toujours la dernière version, sans cache périmé.
+// npm run watch   : reconstruit à chaque modification (fichiers sans empreinte)
 import { context, build } from 'esbuild';
 import { rm, readFile, writeFile } from 'node:fs/promises';
 
 const watch = process.argv.includes('--watch');
 
+// Script principal → page où il est chargé (chemin relatif depuis la page).
+const PAGES = [
+  { name: 'main', page: 'index.html', prefix: 'assets/js/' },
+  { name: 'admin', page: 'rdv/index.html', prefix: '../assets/js/' },
+];
+
 await rm('assets/js', { recursive: true, force: true });
 
 const options = {
-  entryPoints: ['src/main.js'],
+  entryPoints: ['src/main.js', 'src/admin.js'],
   bundle: true,
   splitting: true,
   format: 'esm',
@@ -26,19 +32,23 @@ const options = {
   metafile: true,
 };
 
-async function linkInPage(file) {
-  const html = await readFile('index.html', 'utf8');
-  const next = html.replace(/assets\/js\/main(-[A-Z0-9]+)?\.js/, file);
-  if (next !== html) await writeFile('index.html', next);
+async function link(name, file) {
+  const { page, prefix } = PAGES.find((p) => p.name === name);
+  const html = await readFile(page, 'utf8');
+  const pattern = new RegExp(`${prefix.replace(/[.]/g, '\\.')}${name}(-[A-Z0-9]+)?\\.js`);
+  const next = html.replace(pattern, prefix + file);
+  if (next !== html) await writeFile(page, next);
+  console.log(`${page} → ${prefix}${file}`);
 }
 
 if (watch) {
-  await linkInPage('assets/js/main.js');
+  for (const { name } of PAGES) await link(name, `${name}.js`);
   const ctx = await context(options);
   await ctx.watch();
 } else {
   const result = await build(options);
-  const entry = Object.keys(result.metafile.outputs).find((o) => /assets\/js\/main-[A-Z0-9]+\.js$/.test(o));
-  await linkInPage(entry);
-  console.log(`index.html → ${entry}`);
+  for (const { name } of PAGES) {
+    const out = Object.keys(result.metafile.outputs).find((o) => new RegExp(`assets/js/${name}-[A-Z0-9]+\\.js$`).test(o));
+    await link(name, out.split('/').pop());
+  }
 }

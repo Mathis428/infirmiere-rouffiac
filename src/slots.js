@@ -45,7 +45,7 @@ export function buildDemoDays(config, now = parisNow()) {
     if (!config.weekdays.includes(isoDay)) continue;
     // Pour le lendemain, la demande ferme la veille à l'heure limite.
     const open = i > 1 || now.h < config.cutoffHour;
-    days.push({ date: toYmd(date), open, times: open ? gridTimes(config) : [] });
+    days.push({ date: toYmd(date), open, times: open ? config.bookingTimes.slice() : [] });
   }
   return days;
 }

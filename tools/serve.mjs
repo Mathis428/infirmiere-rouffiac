@@ -17,6 +17,7 @@ const TYPES = {
   '.webp': 'image/webp',
   '.woff2': 'font/woff2',
   '.vcf': 'text/vcard; charset=utf-8',
+  '.webmanifest': 'application/manifest+json',
   '.ico': 'image/x-icon',
   '.txt': 'text/plain; charset=utf-8',
 };

@@ -18,11 +18,22 @@
  */
 
 const CONFIG = {
-  calendarId: 'primary', // 'primary' = l'agenda principal du compte
+  // Agenda où le site crée les rendez-vous : l'agenda « boulot » d'Isabelle.
+  // ('primary' = l'agenda principal du compte.)
+  calendarId: 'f462b068e48c86458b88d49ca88db0ff08f224cf4b662e68650bf0b30eead4cd@group.calendar.google.com',
+  // Agendas seulement LUS pour savoir quand elle est occupée : rien n'y est jamais écrit.
+  // 'primary' = son agenda principal, privé. Seuls les événements avec une heure y bloquent
+  // un créneau ; les événements « journée entière » (anniversaires, rappels) sont ignorés.
+  // Mettre [] pour ne tenir compte que de l'agenda boulot.
+  busyCalendars: ['primary'],
   notifyEmail: '', // vide = l'adresse du compte Google qui déploie le script
   communes: ['Saint-Bauzile', 'Balsièges', 'Brenoux', 'Lanuéjols'],
 
-  // Créneaux proposés en ligne (heure de Paris) : toutes les 30 min de 7 h à 18 h 30 (fin à 19 h).
+  // Heures que les patients peuvent réserver en ligne (heure de Paris), et uniquement celles-là.
+  bookingTimes: ['07:00', '08:30', '09:00', '09:30', '10:00', '10:30', '17:00', '17:30'],
+
+  // Journée d'Isabelle (7 h → 19 h, toutes les 30 min) : sert à « Mes rendez-vous » quand elle
+  // propose ou déplace un horaire elle-même. Les patients, eux, ne voient que bookingTimes.
   firstStart: '07:00',
   lastStart: '18:30',
   step: 30, // minutes entre deux heures de début
@@ -37,13 +48,14 @@ const CONFIG = {
     unknown: 0, // événement de l'agenda dont on ne connaît pas la commune
   },
 
-  weekdays: [1, 2, 3, 4, 5, 6, 7], // jours où un rendez-vous peut avoir lieu (1 = lundi … 7 = dimanche)
-  bookingDays: [1, 2, 3, 4, 5], // jours où l'on peut réserver en ligne : pas le samedi ni le dimanche
+  weekdays: [1, 2, 3, 4, 5], // jours des rendez-vous pris en ligne : du lundi au vendredi (1 = lundi … 7 = dimanche)
+  bookingDays: [1, 2, 3, 4, 5, 6, 7], // jours où l'on peut faire la réservation en ligne : tous les jours
   cutoffHour: 18, // demande possible jusqu'à la veille à cette heure
   daysAhead: 21,
   reminderHour: 17, // heure d'envoi des rappels, la veille du rendez-vous
   keepDays: 90, // les demandes sont effacées après ce délai (fonction nettoyer)
   smsSender: 'IBuisson', // nom d'expéditeur des SMS (11 caractères max, sans espace)
+  adminUrl: 'https://cabinet-infirmier-rouffiac.fr/rdv/', // page « Mes rendez-vous » d'Isabelle
 };
 
 // Soins réservables en ligne sur un créneau (les mêmes que « data-slot » dans index.html).
@@ -71,7 +83,10 @@ const STATUS = {
   confirmed: 'Confirmé',
   refused: 'Refusé',
   declined: 'Refusé par le patient',
+  cancelled: 'Annulé',
 };
+// Statuts où une demande attend encore une décision (valider ou refuser).
+const OPEN_ = [STATUS.pending, STATUS.proposed];
 const DAYS_FR = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
 const MONTHS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 
@@ -107,14 +122,44 @@ function doPost(e) {
     return json_({ ok: false, error: 'format' });
   }
   if (data.website) return json_({ ok: true }); // champ piège rempli : robot, ignoré
+  const writes = ['book', 'callback', 'admin.login', 'admin.decide', 'admin.settings'];
+  return json_(writes.indexOf(data.action) >= 0 ? once_(data.key, () => route_(data)) : route_(data));
+}
+
+function route_(data) {
   try {
-    if (data.action === 'book') return json_(book_(data));
-    if (data.action === 'callback') return json_(request_(data));
+    if (String(data.action || '').indexOf('admin.') === 0) return admin_(data);
+    if (data.action === 'book') return book_(data);
+    if (data.action === 'callback') return request_(data);
   } catch (err) {
     console.error(err);
-    return json_({ ok: false, error: 'server' });
+    return { ok: false, error: 'server' };
   }
-  return json_({ ok: false, error: 'action' });
+  return { ok: false, error: 'action' };
+}
+
+// Quand Google tarde à répondre, le navigateur renvoie la même demande avec la même clé :
+// on rend alors la réponse déjà faite au lieu de la traiter deux fois (deux réservations,
+// deux e-mails, deux essais de code…).
+function once_(key, run) {
+  key = String(key || '').replace(/[^\w-]/g, '').slice(0, 64);
+  if (!key) return run();
+  const cache = CacheService.getScriptCache();
+  const id = 'once:' + key;
+  for (let i = 0; i < 25; i++) {
+    const prev = cache.get(id);
+    if (!prev) break;
+    if (prev !== 'en cours') return JSON.parse(prev);
+    Utilities.sleep(1000); // la première demande est encore en train d'être traitée
+  }
+  cache.put(id, 'en cours', 120);
+  const result = run();
+  try {
+    cache.put(id, JSON.stringify(result), 600);
+  } catch (err) {
+    cache.remove(id);
+  }
+  return result;
 }
 
 // ------------------------------------------------------------------ horaires libres (trajets compris)
@@ -126,12 +171,13 @@ function listDays_(commune) {
   const last = addDays_(startOfDay_(now), CONFIG.daysAhead);
   const blocks = blocks_(first, addDays_(last, 1));
   const knownCommune = CONFIG.communes.indexOf(commune) >= 0 ? commune : null;
+  const bookable = bookingTimes_();
   const days = [];
   for (let d = first; d <= last; d = addDays_(d, 1)) {
     if (!isWorkday_(d)) continue;
     const open = isOpen_(d, now) && !!knownCommune;
     const times = open
-      ? gridTimes_().filter((t) => fits_(blocks, at_(d, t), CONFIG.duration, knownCommune, null))
+      ? bookable.filter((t) => fits_(blocks, at_(d, t), CONFIG.duration, knownCommune, null))
       : [];
     days.push({ date: ymd_(d), open: open, times: times });
   }
@@ -139,16 +185,25 @@ function listDays_(commune) {
 }
 
 // Événements de l'agenda sur une période, avec leur commune si on la connaît.
+// L'agenda boulot compte en entier ; les agendas de busyCalendars, seulement leurs événements avec une heure.
 function blocks_(from, to) {
-  return calendar_()
-    .getEvents(from, to)
-    .map((ev) => ({
-      id: ev.getId(),
-      start: ev.getStartTime(),
-      end: ev.getEndTime(),
-      allDay: ev.isAllDayEvent(),
-      commune: communeOf_(ev),
-    }));
+  const block = (ev) => ({
+    id: ev.getId(),
+    start: ev.getStartTime(),
+    end: ev.getEndTime(),
+    allDay: ev.isAllDayEvent(),
+    commune: communeOf_(ev),
+  });
+  const work = calendar_();
+  const list = work.getEvents(from, to).map(block);
+  (CONFIG.busyCalendars || []).forEach((id) => {
+    const cal = id === 'primary' ? CalendarApp.getDefaultCalendar() : CalendarApp.getCalendarById(id);
+    if (!cal || cal.getId() === work.getId()) return;
+    cal.getEvents(from, to).forEach((ev) => {
+      if (!ev.isAllDayEvent()) list.push(block(ev));
+    });
+  });
+  return list;
 }
 
 function communeOf_(ev) {
@@ -208,8 +263,14 @@ function book_(d) {
     ev.setTag('commune', r.commune);
     r.eventId = ev.getId();
     saveRecord_(r);
-    notifyNurse_(r, 'Nouvelle demande : ' + r.care.toLowerCase() + ' le ' + longDate_(start) + ' à ' + time_(start));
-    ackPatient_(r);
+    const subject = 'Nouvelle demande : ' + r.care.toLowerCase() + ' le ' + longDate_(start) + ' à ' + time_(start);
+    if (autoConfirm_()) {
+      confirm_(r, '');
+      notifyNurse_(r, subject + ' (confirmée automatiquement)');
+    } else {
+      notifyNurse_(r, subject);
+      ackPatient_(r);
+    }
     return { ok: true };
   } finally {
     lock.releaseLock();
@@ -234,7 +295,7 @@ function checkSlot_(d) {
   if (SLOT_CARES.indexOf(d.care) < 0) return 'care';
   if (CONFIG.communes.indexOf(d.commune) < 0) return 'commune';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date || '')) return 'date';
-  if (gridTimes_().indexOf(d.time) < 0) return 'time';
+  if (bookingTimes_().indexOf(d.time) < 0) return 'time';
   return null;
 }
 
@@ -297,7 +358,10 @@ function nursePage_(id, sig) {
     (r.message ? row_('Message', r.message) : '') +
     '</dl>' +
     '<p class="note">' + contact + '</p>' +
-    (when && r.status !== STATUS.confirmed
+    (OPEN_.indexOf(r.status) < 0
+      ? '<p class="note">Cette demande est déjà traitée. Vous pouvez encore proposer un nouvel horaire.</p>'
+      : '') +
+    (when && OPEN_.indexOf(r.status) >= 0
       ? '<section><h2>Valider</h2><button onclick="send(\'valider\')">Valider ce rendez-vous</button></section>'
       : '') +
     '<section><h2>' + (when ? 'Proposer un autre horaire' : 'Proposer un horaire') + '</h2>' +
@@ -307,9 +371,11 @@ function nursePage_(id, sig) {
     '<label class="check"><input type="checkbox" id="agreed"> Déjà convenu avec le patient (confirmer directement)</label>' +
     '<label>Message pour le patient (facultatif) <textarea id="propose-msg" rows="2"></textarea></label>' +
     '<button onclick="send(\'proposer\')">Proposer cet horaire</button></section>' +
-    '<section><h2>Refuser</h2>' +
-    '<label>Message pour le patient (facultatif) <textarea id="refuse-msg" rows="2"></textarea></label>' +
-    '<button class="secondary" onclick="send(\'refuser\')">Refuser la demande</button></section>' +
+    (OPEN_.indexOf(r.status) >= 0
+      ? '<section><h2>Refuser</h2>' +
+        '<label>Message pour le patient (facultatif) <textarea id="refuse-msg" rows="2"></textarea></label>' +
+        '<button class="secondary" onclick="send(\'refuser\')">Refuser la demande</button></section>'
+      : '<textarea id="refuse-msg" hidden></textarea>') +
     '<p id="result" role="status"></p>' +
     '<script>' +
     'function send(choice){var b=document.querySelectorAll("button");b.forEach(function(x){x.disabled=true});' +
@@ -331,7 +397,40 @@ function decider(id, sig, p) {
   try {
     const r = findRecord_(id);
     if (!r) throw new Error('demande introuvable');
+    return decide_(r, p);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Valider, refuser, annuler ou proposer un horaire. Renvoie une phrase pour Isabelle.
+// Utilisée par la page « Mes rendez-vous » et par l'ancienne page (lien signé).
+function decide_(r, p) {
+  {
     const message = clean_(p.message, 500);
+
+    // Les deux pages (« Mes rendez-vous » et l'ancien lien) peuvent agir sur la même demande :
+    // on vérifie toujours le statut actuel avant d'agir.
+    const done = 'cette demande est déjà traitée (statut : ' + r.status + ')';
+    if ((p.choice === 'valider' || p.choice === 'refuser') && OPEN_.indexOf(r.status) < 0) throw new Error(done);
+    if (p.choice === 'annuler' && [STATUS.confirmed, STATUS.proposed].indexOf(r.status) < 0) throw new Error(done);
+
+    if (p.choice === 'annuler') {
+      if (!r.appointment) throw new Error('aucun rendez-vous à annuler');
+      const when = longDate_(r.appointment) + ' à ' + time_(r.appointment);
+      deleteEvent_(r);
+      r.status = STATUS.cancelled;
+      saveRecord_(r);
+      tellPatient_(
+        r,
+        'Rendez-vous annulé : ' + when,
+        'Je dois malheureusement annuler mon passage du ' + when + ' (' + r.care.toLowerCase() + ').' +
+          (message ? '\n\n' + message : '') +
+          '\n\nAppelez-moi au ' + PHONE_DISPLAY + ' pour convenir d’un autre moment.',
+        'Isabelle Buisson, infirmière : je dois annuler le RDV du ' + shortDate_(r.appointment) + '. Appelez-moi au ' + PHONE_DISPLAY + '.',
+      );
+      return 'Rendez-vous annulé. ' + informed_(r);
+    }
 
     if (p.choice === 'valider') {
       if (!r.appointment) throw new Error('aucun horaire à valider : proposez-en un');
@@ -400,13 +499,28 @@ function decider(id, sig, p) {
         (r.email ? 'Le patient a reçu un lien pour accepter ou refuser.' : 'Pas d’e-mail : appelez le patient, puis revenez cocher « Déjà convenu ».');
     }
     throw new Error('choix inconnu');
-  } finally {
-    lock.releaseLock();
   }
 }
 
 function confirm_(r, message) {
-  const ev = eventById_(r.eventId);
+  let ev = eventById_(r.eventId);
+  if (!ev && r.appointment) {
+    // L'événement a été supprimé à la main dans l'agenda : on le recrée, si l'horaire est toujours libre.
+    const start = r.appointment;
+    const minutes = Number(r.minutes) || CONFIG.duration;
+    const end = new Date(start.getTime() + minutes * 60000);
+    const commune = CONFIG.communes.indexOf(r.commune) >= 0 ? r.commune : null;
+    if (!fits_(blocks_(addDays_(start, -1), addDays_(end, 1)), start, minutes, commune, null)) {
+      throw new Error('l’horaire n’est plus libre dans l’agenda : proposez-en un autre');
+    }
+    ev = calendar_().createEvent(eventTitle_(r, STATUS.confirmed), start, end, {
+      location: r.address + ', ' + r.commune + ', Lozère',
+      description: eventDescription_(r),
+    });
+    ev.setTag('requestId', r.id);
+    if (commune) ev.setTag('commune', commune);
+    r.eventId = ev.getId();
+  }
   if (ev) {
     ev.setTitle(eventTitle_(r, STATUS.confirmed));
     ev.setColor(CalendarApp.EventColor.RED);
@@ -523,6 +637,149 @@ function nettoyer() {
   }
 }
 
+// ------------------------------------------------------------------ « Mes rendez-vous » (page d'Isabelle)
+
+// Le code d'accès se règle dans l'éditeur : Paramètres du projet → Propriétés du script →
+// CODE_GESTION. Changer ce code déconnecte tous les téléphones.
+function admin_(d) {
+  try {
+    if (d.action === 'admin.login') return adminLogin_(d.code);
+    if (!adminTokenOk_(d.token)) return { ok: false, error: 'auth' };
+    if (d.action === 'admin.list') {
+      return {
+        ok: true,
+        items: allRecords_().map(publicRecord_),
+        autoConfirm: autoConfirm_(),
+        bookingTimes: bookingTimes_(),
+        now: new Date().toISOString(),
+      };
+    }
+    if (d.action === 'admin.slots') {
+      return { ok: true, times: freeTimesOn_(d.date, d.commune, d.ignoreId, Number(d.minutes) || CONFIG.duration) };
+    }
+    if (d.action === 'admin.settings') {
+      const props = PropertiesService.getScriptProperties();
+      if (typeof d.autoConfirm === 'boolean') props.setProperty('AUTO_CONFIRM', d.autoConfirm ? 'oui' : 'non');
+      if (Array.isArray(d.bookingTimes)) {
+        const grid = gridTimes_();
+        const times = grid.filter((t) => d.bookingTimes.indexOf(t) >= 0); // seulement des heures de sa journée, dans l'ordre
+        props.setProperty('BOOKING_TIMES', JSON.stringify(times));
+      }
+      return { ok: true, autoConfirm: autoConfirm_(), bookingTimes: bookingTimes_() };
+    }
+    if (d.action === 'admin.decide') {
+      const lock = LockService.getScriptLock();
+      lock.waitLock(20000);
+      try {
+        const r = findRecord_(d.id);
+        if (!r) return { ok: false, error: 'missing', message: 'Cette demande n’existe plus.' };
+        return { ok: true, message: decide_(r, d) };
+      } finally {
+        lock.releaseLock();
+      }
+    }
+    return { ok: false, error: 'action' };
+  } catch (err) {
+    return { ok: false, error: 'refused', message: String(err && err.message ? err.message : err) };
+  }
+}
+
+// Connexion à « Mes rendez-vous ». Toutes les 5 erreurs, la connexion est bloquée de plus en plus
+// longtemps (15 min, 30 min, 1 h, 2 h, 4 h, puis 6 h à chaque fois) et Isabelle reçoit un e-mail.
+// Le compteur ne repart à zéro qu'après une connexion réussie. Les téléphones déjà connectés
+// continuent de fonctionner pendant un blocage.
+const ADMIN_TRIES = 5;
+
+// Le code peut contenir des lettres (majuscules et minuscules comptent), des chiffres et des signes.
+// Au moins 6 caractères s'il n'y a que des chiffres, au moins 8 s'il y a autre chose.
+function codeStrong_(code) {
+  return /^\d{6,}$/.test(code) || (code.length >= 8 && !/^\d+$/.test(code));
+}
+
+function adminLogin_(code) {
+  const props = PropertiesService.getScriptProperties();
+  const expected = String(props.getProperty('CODE_GESTION') || '').trim();
+  if (!expected) return { ok: false, error: 'nocode' };
+  if (!codeStrong_(expected)) return { ok: false, error: 'weak' };
+  const cache = CacheService.getScriptCache();
+  const until = Number(cache.get('adminLockUntil') || 0);
+  if (until > Date.now()) return { ok: false, error: 'locked', minutes: Math.ceil((until - Date.now()) / 60000) };
+  if (String(code || '').trim() !== expected) {
+    const fails = Number(props.getProperty('ADMIN_FAILS') || 0) + 1;
+    props.setProperty('ADMIN_FAILS', String(fails));
+    if (fails % ADMIN_TRIES) return { ok: false, error: 'code', left: ADMIN_TRIES - (fails % ADMIN_TRIES) };
+    const minutes = Math.min(15 * Math.pow(2, fails / ADMIN_TRIES - 1), 360);
+    cache.put('adminLockUntil', String(Date.now() + minutes * 60000), minutes * 60);
+    alertNurse_(fails, minutes);
+    return { ok: false, error: 'locked', minutes: minutes };
+  }
+  props.deleteProperty('ADMIN_FAILS');
+  cache.remove('adminLockUntil');
+  return { ok: true, token: adminToken_() };
+}
+
+function alertNurse_(fails, minutes) {
+  try {
+    mail_(
+      CONFIG.notifyEmail || Session.getEffectiveUser().getEmail(),
+      'Mes rendez-vous : codes incorrects',
+      fails + ' codes incorrects ont été tapés sur la page « Mes rendez-vous ». La connexion est bloquée pendant ' +
+        (minutes >= 60 ? minutes / 60 + ' h' : minutes + ' minutes') + '.\n\n' +
+        'Si ce n’est pas vous, changez le code (propriété CODE_GESTION du script) : tous les téléphones seront déconnectés. ' +
+        'Votre téléphone déjà connecté continue de fonctionner.',
+    );
+  } catch (err) {
+    // l'alerte ne doit jamais empêcher la réponse
+  }
+}
+
+function adminToken_() {
+  const code = PropertiesService.getScriptProperties().getProperty('CODE_GESTION') || '';
+  return sig_('admin', 'session:' + code);
+}
+
+function adminTokenOk_(token) {
+  return !!token && !!PropertiesService.getScriptProperties().getProperty('CODE_GESTION') && token === adminToken_();
+}
+
+// Heures réservables en ligne : celles qu'Isabelle a choisies dans « Mes rendez-vous » (Réglages),
+// sinon celles de CONFIG.bookingTimes.
+function bookingTimes_() {
+  const saved = PropertiesService.getScriptProperties().getProperty('BOOKING_TIMES');
+  if (saved) {
+    try {
+      const list = JSON.parse(saved);
+      if (Array.isArray(list)) return gridTimes_().filter((t) => list.indexOf(t) >= 0);
+    } catch (err) {
+      // réglage illisible : on revient aux heures par défaut
+    }
+  }
+  return CONFIG.bookingTimes.slice();
+}
+
+function autoConfirm_() {
+  return PropertiesService.getScriptProperties().getProperty('AUTO_CONFIRM') === 'oui';
+}
+
+// Créneaux libres un jour donné (pour proposer un autre horaire), sans compter le rendez-vous lui-même.
+function freeTimesOn_(date, commune, ignoreId, minutes) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return [];
+  const day = parseYmd_(date);
+  const blocks = blocks_(day, addDays_(day, 1));
+  const known = CONFIG.communes.indexOf(commune) >= 0 ? commune : null;
+  const now = new Date();
+  return gridTimes_().filter((t) => at_(day, t) > now && fits_(blocks, at_(day, t), minutes, known, ignoreId || null));
+}
+
+function publicRecord_(r) {
+  const iso = (v) => (v instanceof Date && !isNaN(v) ? v.toISOString() : null);
+  return {
+    id: r.id, received: iso(r.received), status: r.status, care: r.care, commune: r.commune, name: r.name,
+    phone: r.phone, email: r.email, address: r.address, access: r.access, wishDate: r.wishDate, moment: r.moment,
+    message: r.message, appointment: iso(r.appointment), minutes: Number(r.minutes) || null, eventId: r.eventId || null,
+  };
+}
+
 // ------------------------------------------------------------------ messages
 
 function notifyNurse_(r, subject) {
@@ -538,10 +795,12 @@ function notifyNurse_(r, subject) {
     r.access ? 'Pour trouver : ' + r.access : null,
     r.message ? 'Message : ' + r.message : null,
     '',
-    'VALIDER, REFUSER OU PROPOSER UN AUTRE HORAIRE :',
-    link,
+    r.status === STATUS.confirmed ? 'Rendez-vous confirmé automatiquement. Pour le voir, le déplacer ou l’annuler :' : 'CONFIRMER, REFUSER OU PROPOSER UN AUTRE HORAIRE :',
+    CONFIG.adminUrl + '#' + r.id,
     '',
-    r.appointment ? 'L’horaire est bloqué dans votre agenda (en gris) en attendant votre réponse.' : null,
+    '(Lien de secours : ' + link + ')',
+    '',
+    r.appointment && r.status !== STATUS.confirmed ? 'L’horaire est bloqué dans votre agenda (en gris) en attendant votre réponse.' : null,
   ].filter((line) => line !== null).join('\n'));
 }
 
@@ -649,16 +908,24 @@ function saveRecord_(r) {
 // ------------------------------------------------------------------ agenda
 
 function calendar_() {
-  return CONFIG.calendarId === 'primary' ? CalendarApp.getDefaultCalendar() : CalendarApp.getCalendarById(CONFIG.calendarId);
+  const cal = CONFIG.calendarId === 'primary' ? CalendarApp.getDefaultCalendar() : CalendarApp.getCalendarById(CONFIG.calendarId);
+  if (!cal) throw new Error('Agenda introuvable : vérifiez calendarId dans CONFIG (ID de l’agenda boulot).');
+  return cal;
 }
 
+// Cherche dans l'agenda boulot, puis dans l'agenda principal (rendez-vous créés avant le changement d'agenda).
 function eventById_(id) {
   if (!id) return null;
-  try {
-    return calendar_().getEventById(id);
-  } catch (err) {
-    return null;
+  const tries = [calendar_, () => CalendarApp.getDefaultCalendar()];
+  for (let i = 0; i < tries.length; i++) {
+    try {
+      const ev = tries[i]().getEventById(id);
+      if (ev) return ev;
+    } catch (err) {
+      // on essaie l'agenda suivant
+    }
   }
+  return null;
 }
 
 function deleteEvent_(r) {
@@ -679,7 +946,8 @@ function eventDescription_(r) {
     'Adresse : ' + r.address + ', ' + r.commune,
     r.access ? 'Pour trouver : ' + r.access : null,
     '',
-    'Demande faite sur le site. Gérer : ' + webUrl_() + '?action=gerer&id=' + encodeURIComponent(r.id) + '&sig=' + sig_(r.id, 'nurse'),
+    'Demande faite sur le site. Gérer : ' + CONFIG.adminUrl + '#' + r.id,
+    'Lien de secours : ' + webUrl_() + '?action=gerer&id=' + encodeURIComponent(r.id) + '&sig=' + sig_(r.id, 'nurse'),
   ].filter((line) => line !== null).join('\n');
 }
 
@@ -790,7 +1058,7 @@ function isWorkday_(d) {
   return CONFIG.weekdays.indexOf(iso) >= 0;
 }
 
-// La réservation en ligne elle-même est fermée le samedi et le dimanche.
+// Jours où l'on peut faire une réservation en ligne (CONFIG.bookingDays : aujourd'hui, tous les jours).
 function canBookNow_(now) {
   const iso = now.getDay() === 0 ? 7 : now.getDay();
   return CONFIG.bookingDays.indexOf(iso) >= 0;

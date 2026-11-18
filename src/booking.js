@@ -3,6 +3,7 @@
 //   (plus de 11 ans), dans l'une des 4 communes : la personne choisit un créneau de 30 minutes.
 // - Autres soins, ou autre commune : demande, Isabelle rappelle pour fixer le rendez-vous.
 import { buildDemoDays, dayParts, longDate, timeLabel, parisIsoDay } from './slots.js';
+import { callScript } from './gas.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const PHONE_RE = /^(?:(?:\+|00)33[\s.-]?[1-9]|0[1-9])(?:[\s.-]?\d{2}){4}$/;
@@ -76,7 +77,7 @@ export function initBooking(root, config) {
         ? 'La réservation en ligne de ce soin concerne Saint-Bauzile, Balsièges, Brenoux et Lanuéjols. Envoyez votre demande : je vous rappelle pour voir ce qui est possible.'
         : 'Je vous rappelle au plus tôt pour fixer, avec vous, un rendez-vous.';
     }
-    // Pas de réservation en ligne le samedi ni le dimanche (les rendez-vous, eux, peuvent tomber le week-end).
+    // Jours où la réservation en ligne est ouverte (config.bookingDays ; aujourd'hui tous les jours).
     const closedNow = m === 'slots' && !config.bookingDays.includes(parisIsoDay());
     submit.disabled = closedNow;
     if (closedNow) {
@@ -338,25 +339,13 @@ function clearError(form, key) {
 
 // ------------------------------------------------------------------ envoi
 
-async function request(url, options = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-  try {
-    const res = await fetch(url, { ...options, redirect: 'follow', signal: controller.signal });
-    return await res.json();
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-const send = (endpoint, payload) =>
-  request(endpoint, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) });
+const send = (endpoint, payload) => callScript(endpoint, { body: payload });
 
 const fakeSend = () => new Promise((resolve) => setTimeout(() => resolve({ ok: true, demo: true }), 700));
 
 async function fetchDays(endpoint, commune) {
   const params = new URLSearchParams({ action: 'slots', commune });
-  const json = await request(`${endpoint}?${params}`);
+  const json = await callScript(`${endpoint}?${params}`);
   if (!json || !json.ok) throw new Error('slots');
   return json.days;
 }
