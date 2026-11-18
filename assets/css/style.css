@@ -45,7 +45,7 @@
   --step-body: clamp(1.0625rem, 1rem + 0.2vw, 1.125rem);
   --step-lead: clamp(1.1875rem, 1.1rem + 0.35vw, 1.375rem);
   --step-h2: clamp(1.75rem, 1.4rem + 1.2vw, 2.375rem);
-  --step-h1: clamp(2.5rem, 1.7rem + 3vw, 4rem);
+  --step-h1: clamp(2.5rem, 1.2rem + 5vw, 5.75rem);
 
   --font: "Lato", "Segoe UI", system-ui, -apple-system, sans-serif;
   --radius: 14px;
@@ -338,16 +338,35 @@ p {
   padding: clamp(28px, 4vw, 48px) 0 var(--section);
 }
 
-.hero__grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 40px;
+/* Téléphone : petite photo à gauche du nom. Ordinateur : photo à gauche de tout le bloc. */
+.hero__id {
+  display: flex;
   align-items: center;
+  gap: 16px;
+}
+.hero__photo {
+  flex: none;
+  width: 84px;
+  margin: 0;
 }
 @media (min-width: 900px) {
-  .hero__grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 64px;
+  .hero__text {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    column-gap: 56px;
+    align-items: start;
+  }
+  .hero__id {
+    display: contents;
+  }
+  .hero__photo {
+    grid-column: 1;
+    grid-row: 1 / span 5;
+    width: 240px;
+    align-self: center;
+  }
+  .hero__text > :not(.hero__id) {
+    grid-column: 2;
   }
 }
 
@@ -376,33 +395,16 @@ p {
   margin-top: 32px;
 }
 .facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 28px;
-  margin: 28px 0 0;
-  padding: 0;
+  margin-top: 28px;
   color: var(--ink-soft);
   font-size: var(--step-small);
-  list-style: none;
 }
 
-.hero__photo {
-  width: min(100%, 600px);
-  margin: 0;
-  justify-self: end;
-}
 .hero__photo img {
   width: 100%;
   height: auto;
   border-radius: var(--radius);
   background: var(--tag);
-}
-@media (max-width: 899px) {
-  .hero__photo {
-    order: -1;
-    width: min(62vw, 300px);
-    justify-self: start;
-  }
 }
 
 /* ------------------------------------------------------------------ sections */
@@ -453,47 +455,57 @@ p {
   font-weight: 700;
 }
 
-/* Secteur */
-.communes {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 20px;
-  margin: 0;
+/* Secteur : photos posées en désordre, qui se chevauchent, sans légende. */
+.collage {
+  position: relative;
+  aspect-ratio: 1180 / 620;
+  margin: 8px 0 0;
   padding: 0;
   list-style: none;
 }
-@media (max-width: 999px) {
-  .communes {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.collage li {
+  position: absolute;
+  left: var(--x);
+  top: var(--y);
+  width: 34%;
+  transform: rotate(var(--r));
+  transition: transform 220ms ease;
 }
-@media (max-width: 479px) {
-  .communes {
-    gap: 14px;
-  }
+.collage li:nth-child(2n) {
+  z-index: 1;
 }
-.communes figure {
-  margin: 0;
-}
-.communes img {
+.collage img {
   width: 100%;
   height: auto;
   aspect-ratio: 4 / 3;
   object-fit: cover;
-  border-radius: var(--radius);
+  border: 8px solid #fff;
+  border-radius: 6px;
   background: var(--tag);
+  box-shadow: 0 2px 4px rgba(31, 35, 40, 0.08), 0 10px 24px rgba(31, 35, 40, 0.14); /* taste-skill-ignore: photos posées les unes sur les autres, demandé par Isabelle */
 }
-.communes figcaption {
-  display: grid;
-  margin-top: 12px;
-  line-height: 1.35;
+.collage li:hover {
+  z-index: 3;
+  transform: rotate(0deg) scale(1.04);
 }
-.communes figcaption strong {
-  font-size: var(--step-lead);
+@media (max-width: 699px) {
+  .collage {
+    aspect-ratio: 3 / 4;
+  }
+  .collage li {
+    left: var(--mx);
+    top: var(--my);
+    width: 56%;
+    transform: rotate(var(--mr));
+  }
+  .collage img {
+    border-width: 5px;
+  }
 }
-.communes figcaption span {
-  color: var(--ink-soft);
-  font-size: var(--step-small);
+@media (prefers-reduced-motion: reduce) {
+  .collage li:hover {
+    transform: rotate(var(--r));
+  }
 }
 
 /* ------------------------------------------------------------------ rendez-vous */
@@ -631,6 +643,24 @@ p {
   display: grid;
   gap: 8px;
 }
+.choices__label {
+  margin: 4px 0 8px;
+  color: var(--ink-soft);
+  font-size: var(--step-small);
+}
+.choices + .choices__label {
+  margin-top: 18px;
+}
+.condition {
+  margin: 0 0 20px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-alt);
+  font-size: var(--step-body);
+}
+.condition[hidden] {
+  display: none;
+}
 .choices--2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -703,6 +733,9 @@ p {
 }
 .choice input[aria-invalid="true"] + span {
   border-color: var(--red);
+}
+[data-times].choices--3 {
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
 }
 .choice--day span,
 .choice--time span {

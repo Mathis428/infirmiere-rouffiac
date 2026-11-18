@@ -20,15 +20,32 @@ export function parisNow(date = new Date()) {
 
 const toYmd = (date) => date.toISOString().slice(0, 10);
 
+// Jour de la semaine à Paris : 1 = lundi … 7 = dimanche.
+export function parisIsoDay(now = parisNow()) {
+  const wd = new Date(Date.UTC(now.y, now.m - 1, now.d)).getUTCDay();
+  return wd === 0 ? 7 : wd;
+}
+
+// Heures de début possibles : de firstStart à lastStart, toutes les `step` minutes.
+export function gridTimes(config) {
+  const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
+  const times = [];
+  for (let m = toMin(config.firstStart); m <= toMin(config.lastStart); m += config.step) {
+    times.push(`${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
+  }
+  return times;
+}
+
+// Démonstration : tous les horaires libres (le vrai calcul, trajets compris, est fait par le script Google).
 export function buildDemoDays(config, now = parisNow()) {
   const days = [];
   for (let i = 1; i <= config.daysAhead; i++) {
     const date = new Date(Date.UTC(now.y, now.m - 1, now.d + i));
     const isoDay = ((date.getUTCDay() + 6) % 7) + 1;
     if (!config.weekdays.includes(isoDay)) continue;
-    // Pour le lendemain, la réservation ferme la veille à l'heure limite.
+    // Pour le lendemain, la demande ferme la veille à l'heure limite.
     const open = i > 1 || now.h < config.cutoffHour;
-    days.push({ date: toYmd(date), open, slots: config.slots.map((time) => ({ time, one: open, two: open })) });
+    days.push({ date: toYmd(date), open, times: open ? gridTimes(config) : [] });
   }
   return days;
 }

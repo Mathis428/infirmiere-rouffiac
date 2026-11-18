@@ -19,5 +19,18 @@ export function initMotion() {
         scrollTrigger: { trigger: group, start: 'top 90%', once: true },
       });
     });
+
+    // Photos du secteur : posées une à une sur la table.
+    const photos = gsap.utils.toArray('[data-collage] li');
+    if (photos.length) {
+      gsap.from(photos, {
+        autoAlpha: 0,
+        y: 36,
+        duration: 0.6,
+        ease: 'power2.out',
+        stagger: 0.09,
+        scrollTrigger: { trigger: '[data-collage]', start: 'top 85%', once: true },
+      });
+    }
   });
 }

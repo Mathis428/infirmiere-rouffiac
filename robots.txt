@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /tools/
+
+Sitemap: https://cabinet-infirmier-rouffiac.fr/sitemap.xml
