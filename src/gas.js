@@ -8,7 +8,10 @@
 const newKey = () =>
   globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-export function callScript(url, { body = null, hedge = body ? 5000 : 3500, tries = 3, total = 45000 } = {}) {
+// Mesuré dans un navigateur : jusqu'à une requête sur deux reste bloquée chez Google, au hasard.
+// Les lectures partent donc par deux d'emblée ; un essai de plus part régulièrement tant
+// qu'aucune réponse n'est arrivée, jusqu'à `tries` essais.
+export function callScript(url, { body = null, start = body ? 1 : 2, hedge = body ? 4000 : 2500, tries = body ? 4 : 5, total = 45000 } = {}) {
   const key = body ? newKey() : null;
   const init = () =>
     body
@@ -53,11 +56,11 @@ export function callScript(url, { body = null, hedge = body ? 5000 : 3500, tries
           if (started < tries) launch(); // échec net : on relance tout de suite
           else if (failed >= started) finish(reject, lastError);
         });
-      // Pas de réponse au bout de quelques secondes : on double la demande.
-      hedgeTimer = setTimeout(launch, hedge * started);
+      // Pas de réponse au bout de quelques secondes : un essai de plus.
+      hedgeTimer = setTimeout(launch, hedge);
     };
 
     const totalTimer = setTimeout(() => finish(reject, lastError), total);
-    launch();
+    for (let i = 0; i < start; i++) launch();
   });
 }

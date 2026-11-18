@@ -124,9 +124,10 @@ async function api(action, payload = {}) {
   const body = { action, token: state.token, ...payload };
   if (DEMO) return demoApi(action, body);
   // Relancée automatiquement si Google tarde (voir gas.js) ; les actions ne sont jamais faites deux fois.
-  // Lectures : doublées dès 3 s. Actions (e-mails, agenda) : le script met plus longtemps, 5 s.
+  // Lectures : deux demandes d'emblée, une de plus toutes les 2,5 s.
+  // Actions (e-mails, agenda) : le script met plus longtemps, un essai de plus toutes les 4 s.
   const read = action === 'admin.list' || action === 'admin.slots';
-  return callScript(CONFIG.endpoint, { body, hedge: read ? 3000 : 5000 });
+  return callScript(CONFIG.endpoint, read ? { body, start: 2, hedge: 2500, tries: 5 } : { body });
 }
 
 // ------------------------------------------------------------------ classement
@@ -1011,5 +1012,7 @@ if (state.token && !DEMO) {
   restoreCache();
   openFromHash();
 }
+// Sur l'écran du code : on réveille le script Google pendant qu'elle tape (voir booking.js).
+if (!state.token && !DEMO) callScript(CONFIG.endpoint, { start: 1, tries: 1, total: 30000 }).catch(() => {});
 render();
 load();

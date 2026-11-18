@@ -25,6 +25,29 @@ export function initBooking(root, config) {
 
   const form = root.querySelector('[data-form="book"]');
   const done = root.querySelector('[data-done]');
+
+  // Réveil anticipé : après un moment sans visite, Google peut mettre 20 secondes à relancer le
+  // script. Dès que le formulaire approche de l'écran (ou qu'on le touche), on le réveille en
+  // arrière-plan, pour que les créneaux arrivent vite une fois le soin et la commune choisis.
+  if (!demo) {
+    let awake = false;
+    const wake = () => {
+      if (awake) return;
+      awake = true;
+      callScript(config.endpoint, { start: 1, tries: 1, total: 30000 }).catch(() => {});
+    };
+    if ('IntersectionObserver' in window) {
+      const io = new IntersectionObserver((entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          io.disconnect();
+          wake();
+        }
+      }, { rootMargin: '600px 0px' });
+      io.observe(form);
+    }
+    form.addEventListener('pointerdown', wake, { once: true });
+    form.addEventListener('focusin', wake, { once: true });
+  }
   const status = form.querySelector('[data-status]');
   const submit = form.querySelector('[data-submit]');
   const hint = form.querySelector('[data-mode-hint]');
