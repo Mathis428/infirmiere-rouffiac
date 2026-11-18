@@ -124,7 +124,9 @@ async function api(action, payload = {}) {
   const body = { action, token: state.token, ...payload };
   if (DEMO) return demoApi(action, body);
   // Relancée automatiquement si Google tarde (voir gas.js) ; les actions ne sont jamais faites deux fois.
-  return callScript(CONFIG.endpoint, { body, timeout: 15000 });
+  // Lectures : doublées dès 3 s. Actions (e-mails, agenda) : le script met plus longtemps, 5 s.
+  const read = action === 'admin.list' || action === 'admin.slots';
+  return callScript(CONFIG.endpoint, { body, hedge: read ? 3000 : 5000 });
 }
 
 // ------------------------------------------------------------------ classement
@@ -136,12 +138,13 @@ const isFuture = (r) => r.appointment && new Date(r.appointment).getTime() + (r.
 function groups() {
   const byDate = (a, b) => new Date(a.appointment) - new Date(b.appointment);
   const wish = (r) => new Date(r.appointment || (r.wishDate ? `${r.wishDate}T12:00:00` : r.received));
-  const toConfirm = state.items.filter((r) => r.status === 'En attente' && r.appointment).sort(byDate);
+  // Une demande jamais traitée dont l'heure est passée part dans l'historique (« Sans réponse »).
+  const toConfirm = state.items.filter((r) => r.status === 'En attente' && r.appointment && isFuture(r)).sort(byDate);
   const toCall = state.items.filter((r) => r.status === 'En attente' && !r.appointment).sort((a, b) => wish(a) - wish(b));
   const waiting = state.items.filter((r) => r.status === 'Horaire proposé' && isFuture(r)).sort(byDate);
   const upcoming = state.items.filter((r) => LIVE.includes(r.status) && r.appointment && isFuture(r));
   const history = state.items
-    .filter((r) => !(r.status === 'En attente') && !(LIVE.includes(r.status) && isFuture(r)))
+    .filter((r) => !toConfirm.includes(r) && !toCall.includes(r) && !(LIVE.includes(r.status) && isFuture(r)))
     .sort((a, b) => wish(b) - wish(a));
   return { toConfirm, toCall, waiting, upcoming, history, todo: toConfirm.length + toCall.length };
 }
@@ -156,6 +159,7 @@ const STATUS = {
 };
 function statusOf(r) {
   if (r.status === 'En attente' && !r.appointment) return { label: 'À rappeler', kind: 'warn' };
+  if (r.status === 'En attente' && !isFuture(r)) return { label: 'Sans réponse', kind: 'off' };
   if (r.status === 'Confirmé' && !isFuture(r)) return { label: 'Passé', kind: 'off' };
   return STATUS[r.status] || { label: r.status, kind: 'off' };
 }
@@ -222,8 +226,10 @@ function firstOf(g) {
 }
 
 function stamp() {
+  if (state.busy) return '<p class="stamp">Mise à jour…</p>';
   if (!state.updatedAt) return '';
-  return `<p class="stamp">À jour à ${timeOf(state.updatedAt)}</p>`;
+  const today = ymdOf(state.updatedAt) === ymdOf(new Date());
+  return `<p class="stamp">À jour ${today ? '' : `le ${esc(dayName(ymdOf(state.updatedAt), false).toLowerCase())} `}à ${timeOf(state.updatedAt)}</p>`;
 }
 
 function listPane(g) {
@@ -525,7 +531,7 @@ function detailPane(r) {
 
 function actionsFor(r) {
   const id = esc(r.id);
-  if (r.status === 'En attente' && r.appointment) {
+  if (r.status === 'En attente' && r.appointment && isFuture(r)) {
     return `<div class="actions">
       <button type="button" class="btn btn--primary" data-action="valider" data-id="${id}">Confirmer ${esc(timeOf(new Date(r.appointment)))}</button>
       <div class="actions__row">
@@ -712,12 +718,20 @@ window.addEventListener('popstate', () => {
   window.scrollTo(0, !id && wasOpen ? state.listScroll : 0);
 });
 
+// Ouvre la fiche demandée par le lien de l'e-mail (#id). Essayé à chaque chargement jusqu'à
+// ce que la demande soit trouvée (une demande toute récente n'est pas encore dans la copie locale).
 function openFromHash() {
+  if (state.hashDone) return;
   const { id, sub } = routeFromHash();
-  const r = id && state.items.find((i) => i.id === id);
+  if (!id) {
+    state.hashDone = true;
+    return;
+  }
+  const r = state.items.find((i) => i.id === id);
   if (!r) return;
+  state.hashDone = true;
   const g = groups();
-  state.tab = r.status === 'En attente' ? 'todo' : g.upcoming.includes(r) ? 'plan' : 'history';
+  state.tab = [...g.toConfirm, ...g.toCall, ...g.waiting].includes(r) ? 'todo' : g.upcoming.includes(r) ? 'plan' : 'history';
   if (state.tab === 'plan') state.planDay = ymdOfItem(r);
   state.open = id;
   state.sub = sub;
@@ -726,9 +740,30 @@ function openFromHash() {
 
 // ------------------------------------------------------------------ données
 
+// Copie de la dernière liste sur le téléphone : la page s'affiche tout de suite à l'ouverture,
+// puis se met à jour dès que Google répond. Effacée à la déconnexion.
+const CACHE_KEY = 'rdv.cache';
+function saveCache() {
+  if (DEMO) return;
+  write(CACHE_KEY, JSON.stringify({ items: state.items, autoConfirm: state.autoConfirm, bookingTimes: state.bookingTimes, at: state.updatedAt.toISOString() }));
+}
+function restoreCache() {
+  try {
+    const c = JSON.parse(read(CACHE_KEY) || 'null');
+    if (!c || !Array.isArray(c.items)) return;
+    state.items = c.items;
+    state.autoConfirm = !!c.autoConfirm;
+    if (Array.isArray(c.bookingTimes)) state.bookingTimes = c.bookingTimes;
+    const at = new Date(c.at);
+    state.updatedAt = isNaN(at) ? null : at;
+    state.loaded = true;
+  } catch {
+    /* copie illisible : on attend Google */
+  }
+}
+
 async function load(quiet = false) {
   if (!state.token) return render();
-  const first = !state.loaded;
   if (!quiet) {
     state.busy = true;
     if (state.loaded) render();
@@ -744,13 +779,14 @@ async function load(quiet = false) {
     if (Array.isArray(res.bookingTimes)) state.bookingTimes = res.bookingTimes;
     state.error = '';
     state.updatedAt = new Date();
+    saveCache();
   } catch {
     state.error = `Google n’a pas répondu${state.updatedAt ? ` (liste à jour à ${timeOf(state.updatedAt)})` : ''}. Vérifiez la connexion internet, puis réessayez.`;
   } finally {
     state.loaded = true;
     state.busy = false;
   }
-  if (first) openFromHash();
+  openFromHash();
   state.days = {};
   render();
 }
@@ -781,7 +817,9 @@ function logout(message = '') {
   state.loaded = false;
   state.open = null;
   state.sub = null;
+  state.updatedAt = null;
   write(TOKEN_KEY, '');
+  write(CACHE_KEY, ''); // la copie des rendez-vous ne reste pas sur un téléphone déconnecté
   history.replaceState(null, '', location.pathname + location.search);
   renderLogin(message);
 }
@@ -966,8 +1004,12 @@ function toggleAuto() {
 
 // Mise à jour quand elle revient sur la page, et toutes les deux minutes (sauf pendant une saisie).
 const idle = () => document.visibilityState === 'visible' && state.token && !state.sub;
-document.addEventListener('visibilitychange', () => idle() && load(true));
+document.addEventListener('visibilitychange', () => idle() && load()); // à la réouverture : « Mise à jour… » visible
 setInterval(() => idle() && load(true), 120000);
 
+if (state.token && !DEMO) {
+  restoreCache();
+  openFromHash();
+}
 render();
 load();

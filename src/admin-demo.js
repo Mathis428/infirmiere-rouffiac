@@ -44,6 +44,7 @@ export function createDemoApi(config) {
     item({ status: 'Confirmé', care: 'Retrait de points ou d’agrafes', commune: 'Brenoux', name: 'Lucie Bonnet', phone: '06 11 22 33 44', address: '8 chemin des Prés', appointment: at(1, '10:00') }),
     item({ status: 'Horaire proposé', care: 'Injection', commune: 'Balsièges', name: 'Henri Pagès', phone: '06 70 80 90 10', email: 'h.pages@exemple.fr', address: '3 rue du Lot', appointment: at(2, '09:00') }),
     item({ status: 'Confirmé', care: 'Prise de sang', commune: 'Lanuéjols', name: 'Odette Rouvière', phone: '04 66 47 00 00', address: 'Route de Florac', appointment: at(-2, '08:00') }),
+    item({ status: 'En attente', care: 'Vaccination', commune: 'Saint-Bauzile', name: 'Simone Atger', phone: '06 22 33 44 55', address: '5 rue du Four', appointment: at(-1, '10:00'), received: at(-4, '20:15') }),
     item({ status: 'Refusé', care: 'Soins post-opératoires', commune: 'Autre commune', name: 'Claude Brun', phone: '06 01 02 03 04', address: 'Rue Basse, Florac', wishDate: ymd(-1), moment: 'Après-midi' }),
   ];
 
